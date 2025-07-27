@@ -1,10 +1,35 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// Not all architectures are tested
+fn qemu_name(this: std.Target.Cpu.Arch) ?[]const u8 {
+    return switch (this) {
+        .aarch64 => "qemu-system-aarch64",
+        .arm => "qemu-system-arm",
+        .loongarch64 => "qemu-system-loongarch64",
+        .m68k => "qemu-system-m68k",
+        .mips => "qemu-system-mips",
+        .mips64 => "qemu-system-mips64",
+        .mipsel => "qemu-system-mipsel",
+        .mips64el => "qemu-system-mips64el",
+        .powerpc => "qemu-system-ppc",
+        .powerpc64 => "qemu-system-ppc64",
+        .riscv32 => "qemu-system-riscv32",
+        .riscv64 => "qemu-system-riscv64",
+        .s390x => "qemu-system-s390x",
+        .sparc => "qemu-system-sparc",
+        .sparc64 => "qemu-system-sparc64",
+        .x86 => "qemu-system-i386",
+        .x86_64 => "qemu-system-x86_64",
+        else => return null,
+    };
+}
+
 pub fn build(b: *std.Build) !void {
     // const target = b.standardTargetOptions(.{});
+    const arch = b.option(std.Target.Cpu.Arch, "arch", "Instruction set architecture. Native by default.") orelse builtin.cpu.arch;
     const target = b.resolveTargetQuery(.{
-        .cpu_arch = .x86_64,
+        .cpu_arch = arch,
         .os_tag = .linux,
         .cpu_model = .baseline,
     });
@@ -39,34 +64,20 @@ pub fn build(b: *std.Build) !void {
     mkcpio_run_cmd.step.dependOn(b.getInstallStep());
 
     const vm_run_step = b.step("run-vm", "Run the init inside a VM use qemu.");
-    const kernel_append = "console=ttyS0";
-    const vm_run_cmd = b.addSystemCommand(&.{
-        "qemu-system-x86_64",
-        "-enable-kvm",
-        "-smp",
-        b.option([]const u8, "vm-cores", "Number of cores for the guest system. Default is 1 cpu") orelse "1",
-        "-m",
-        b.option([]const u8, "vm-mem", "Amount of memory for the guest system. Default is 1 GiB") orelse "1G",
-        "-kernel",
-        b.option([]const u8, "vm-kernel", "Path to kernel object.") orelse std.debug.panic("You have to specify a kernel with -Dvm-kernel=", .{}),
-        "-initrd",
-        "./zig-out/rootfs.cpio",
-        "-nographic",
-        "-append",
-        if (b.option([]const u8, "vm-kopts", "Additional kernel options")) |opts|
-            try std.fmt.allocPrint(b.allocator, "{s} {s}", .{ kernel_append, opts })
-        else
-            kernel_append,
-    });
+    var vm_run_args: std.ArrayList([]const u8) = .init(b.allocator);
+    try vm_run_args.append(qemu_name(arch) orelse std.debug.panic("Unsupported architecture: {any}\n", .{arch}));
+    try vm_run_args.append("-initrd");
+    try vm_run_args.append("./zig-out/rootfs.cpio");
+
+    if (b.args) |args| {
+        for (args) |arg|
+            try vm_run_args.append(arg);
+    }
+
+    const vm_run_cmd = b.addSystemCommand(try vm_run_args.toOwnedSlice());
     vm_run_cmd.stdio = .inherit;
     vm_run_step.dependOn(&vm_run_cmd.step);
     vm_run_cmd.step.dependOn(&mkcpio_run_cmd.step);
-
-    // This allows the user to pass arguments to the application in the build
-    // command itself, like this: `zig build run -- arg1 arg2 etc`
-    // if (b.args) |args| {
-    //     run_cmd.addArgs(args);
-    // }
 
     // tests
     const pid0_tests = b.addTest(.{
